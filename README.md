@@ -1,4 +1,4 @@
-# mac_local_llm
+# Mac Local LLM Setup
 
 Run **Qwen3.6** locally on an Apple Silicon Mac with one command — an
 OpenAI/Anthropic-compatible server you can point Hermes, OpenCode, KiloCode,
@@ -94,9 +94,55 @@ or `unsloth/Qwen3.6-27B-MLX-8bit`.
 - **Hermes Agent**: merge [configs/hermes.custom_providers.yaml](configs/hermes.custom_providers.yaml)
   into `~/.hermes/config.yaml`, restart the app, pick `local-qwen`. For visible
   reasoning also set `display.show_reasoning: true`.
-- **OpenCode**: merge [configs/opencode.jsonc](configs/opencode.jsonc) into
-  `~/.config/opencode/opencode.jsonc`, restart the app, pick "Local Qwen".
+- **OpenCode**: registers as a native provider — see the step-by-step below.
 - **Any OpenAI SDK**: `base_url="http://127.0.0.1:8642/v1"`, `api_key="local"`.
+
+### OpenCode setup
+
+OpenCode picks up custom providers from its config file, so both local models
+show up in the normal model picker — no per-session flags.
+
+1. Start the server: `llm-serve 35b` (or `27b`).
+2. Add the provider to `~/.config/opencode/opencode.jsonc`. If the file already
+   has content, merge just the `"provider"` key in; otherwise paste the whole
+   thing (also in [configs/opencode.jsonc](configs/opencode.jsonc)):
+
+   ```jsonc
+   {
+     "$schema": "https://opencode.ai/config.json",
+     "provider": {
+       "local-qwen": {
+         "npm": "@ai-sdk/openai-compatible",
+         "name": "Local Qwen (Rapid-MLX)",
+         "options": {
+           "baseURL": "http://127.0.0.1:8642/v1",
+           "apiKey": "local"
+         },
+         "models": {
+           "unsloth/Qwen3.6-35B-A3B-MLX-8bit": {
+             "name": "Qwen3.6 35B MoE (local, fast)",
+             "limit": { "context": 262144, "output": 32768 },
+             "tool_call": true
+           },
+           "unsloth/Qwen3.6-27B-MLX-8bit": {
+             "name": "Qwen3.6 27B (local, quality)",
+             "limit": { "context": 262144, "output": 32768 },
+             "tool_call": true
+           }
+         }
+       }
+     }
+   }
+   ```
+
+3. Fully quit and reopen OpenCode (config is read at launch).
+4. Open the model picker (`/models`, or the model selector in the UI) and choose
+   **Local Qwen (Rapid-MLX)** → the 35B (fast) or 27B (quality) model.
+
+No API key or `opencode auth` step is needed — it's a local endpoint. Tool
+calling is enabled, so OpenCode's agent/edit features work. If the models don't
+appear, confirm the server is up (`llm-serve status`) and that you fully
+restarted the app.
 
 ## Thinking (reasoning) on/off
 
