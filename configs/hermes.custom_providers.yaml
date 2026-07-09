@@ -1,0 +1,24 @@
+# Hermes Agent — local Qwen provider.
+#
+# Merge this `custom_providers:` block into ~/.hermes/config.yaml (top level).
+# Your existing `model:` default stays untouched — this just registers the
+# provider. Then use it with:
+#     hermes --provider local-qwen -m "unsloth/Qwen3.6-35B-A3B-MLX-8bit"
+# or make it the default by setting, under the existing top-level `model:` key:
+#     provider: custom:local-qwen
+#     default: unsloth/Qwen3.6-35B-A3B-MLX-8bit
+#     base_url: http://127.0.0.1:8642/v1
+#
+# Restart the Hermes desktop app (fully quit + reopen) after editing —
+# config is read at launch. To see reasoning, also set:  display.show_reasoning: true
+# and start the server with thinking on (llm-serve default).
+
+custom_providers:
+  - name: local-qwen
+    base_url: http://127.0.0.1:8642/v1
+    api_key: local
+    default_model: unsloth/Qwen3.6-35B-A3B-MLX-8bit
+    context_length: 262144
+    models:
+      - unsloth/Qwen3.6-35B-A3B-MLX-8bit
+      - unsloth/Qwen3.6-27B-MLX-8bit

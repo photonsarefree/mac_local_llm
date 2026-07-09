@@ -1,0 +1,30 @@
+// OpenCode — local Qwen provider.
+//
+// Merge the "provider" block into ~/.config/opencode/opencode.jsonc, then
+// fully quit + reopen OpenCode (config is read at launch). Both models appear
+// in the model picker under "Local Qwen (Rapid-MLX)".
+{
+  "$schema": "https://opencode.ai/config.json",
+  "provider": {
+    "local-qwen": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "Local Qwen (Rapid-MLX)",
+      "options": {
+        "baseURL": "http://127.0.0.1:8642/v1",
+        "apiKey": "local"
+      },
+      "models": {
+        "unsloth/Qwen3.6-35B-A3B-MLX-8bit": {
+          "name": "Qwen3.6 35B MoE (local, fast)",
+          "limit": { "context": 262144, "output": 32768 },
+          "tool_call": true
+        },
+        "unsloth/Qwen3.6-27B-MLX-8bit": {
+          "name": "Qwen3.6 27B (local, quality)",
+          "limit": { "context": 262144, "output": 32768 },
+          "tool_call": true
+        }
+      }
+    }
+  }
+}

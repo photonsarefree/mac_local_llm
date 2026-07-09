@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+# llm-vision — one-shot image Q&A with the local Qwen3.6 models (via mlx-vlm).
+#
+# Rapid-MLX's OpenAI server can't serve vision for Qwen3.6 (hybrid backbone,
+# upstream #352), but the models are vision-capable. This wraps mlx-vlm directly.
+#
+#   llm-vision <image-path> "question about the image"        # 35b (default)
+#   llm-vision --27b <image-path> "question"                  # 27b variant
+#   llm-vision --max-tokens 500 <image> "question"
+#
+# ~2k tokens per 1080p screenshot, ~75 tok/s, ~40GB peak RAM. Loads its own
+# copy of the model — close `llm-serve` first if RAM is tight.
+set -euo pipefail
+
+RAPID_MLX_VENV="${RAPID_MLX_VENV:-$HOME/.rapid-mlx}"
+PY="$RAPID_MLX_VENV/bin/python"
+MODEL="unsloth/Qwen3.6-35B-A3B-MLX-8bit"
+MAX_TOKENS=300
+ARGS=()
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --27b) MODEL="unsloth/Qwen3.6-27B-MLX-8bit" ;;
+        --35b) ;;
+        --max-tokens) MAX_TOKENS="$2"; shift ;;
+        -h|--help) grep '^#' "$0" | sed 's/^# \{0,1\}//' | sed -n '2,12p'; exit 0 ;;
+        *) ARGS+=("$1") ;;
+    esac
+    shift
+done
+
+if [ "${#ARGS[@]}" -lt 2 ]; then
+    echo "usage: llm-vision [--27b] [--max-tokens N] <image-path> \"question\"" >&2
+    exit 1
+fi
+
+exec "$PY" -m mlx_vlm.generate \
+    --model "$MODEL" \
+    --image "${ARGS[0]}" \
+    --prompt "${ARGS[1]}" \
+    --max-tokens "$MAX_TOKENS" \
+    --temperature 0.0

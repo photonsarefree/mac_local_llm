@@ -1,0 +1,10 @@
+# venv / caches / logs — never committed
+.venv/
+__pycache__/
+*.pyc
+*.log
+logs/
+# model weights & sidecars are downloaded/built, never redistributed here
+mtp_sidecars/
+*.safetensors
+.DS_Store

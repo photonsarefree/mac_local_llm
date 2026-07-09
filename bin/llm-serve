@@ -1,0 +1,287 @@
+#!/usr/bin/env bash
+# llm-serve — spin up a local Qwen3.6 inference server (Rapid-MLX / MLX) on a Mac.
+#
+#   llm-serve 35b            # MoE, fastest decode (~75 tok/s)
+#   llm-serve 27b            # dense, strongest quality (MTP on)
+#   llm-serve stop | status | logs | --help
+#
+# Config via env (all optional):
+#   RAPID_MLX_VENV     venv with rapid-mlx installed   (default ~/.rapid-mlx)
+#   LLM_MTP_SIDECARS   dir with 27b/ 35b/ MTP sidecars (default $VENV/mtp_sidecars)
+#   LLM_SERVE_PORT     default port                    (default 8642)
+set -euo pipefail
+
+RAPID_MLX_VENV="${RAPID_MLX_VENV:-$HOME/.rapid-mlx}"
+RAPID="$RAPID_MLX_VENV/bin/rapid-mlx"
+VENV_PY="$RAPID_MLX_VENV/bin/python"
+SIDECARS="${LLM_MTP_SIDECARS:-$RAPID_MLX_VENV/mtp_sidecars}"
+LOG_DIR="$RAPID_MLX_VENV/logs"
+PID_FILE="$LOG_DIR/llm-serve.pid"
+INFO_FILE="$LOG_DIR/llm-serve.info"
+STATE_FILE="$LOG_DIR/llm-serve.state"
+DEFAULT_PORT="${LLM_SERVE_PORT:-8642}"
+mkdir -p "$LOG_DIR"
+
+if [ ! -x "$RAPID" ]; then
+    echo "rapid-mlx not found at $RAPID" >&2
+    echo "Run install.sh first, or set RAPID_MLX_VENV to your venv." >&2
+    exit 1
+fi
+
+# Working-set GB for the memory banner (best-effort; blank if mlx query fails).
+_worked_set_gb() {
+    "$VENV_PY" - <<'PY' 2>/dev/null || true
+try:
+    import mlx.core as mx
+    try:
+        info = mx.metal.device_info()
+    except Exception:
+        info = mx.device_info()
+    print(round(info["max_recommended_working_set_size"] / 2**30, 1))
+except Exception:
+    pass
+PY
+}
+
+usage() {
+    cat <<'EOF'
+llm-serve — local Qwen3.6 inference (Rapid-MLX, OpenAI + Anthropic compatible)
+
+USAGE
+  llm-serve <27b|35b> [options] [-- <extra rapid-mlx serve flags>]
+  llm-serve status          show running server + connection details
+  llm-serve stop            stop the server (persists prefix cache)
+  llm-serve logs            tail the server log
+
+  Running it while a server is up just re-prints the connection details.
+
+MODELS  (RAM: 27b needs ~40GB free, 35b ~44GB; 64GB+ Macs recommended)
+  35b   unsloth/Qwen3.6-35B-A3B-MLX-8bit  MoE (3B active) — fastest.
+        ~75 tok/s @1k ctx, 71 @16k, 64 @32k. Default: MTP off.
+  27b   unsloth/Qwen3.6-27B-MLX-8bit      dense — strongest quality.
+        ~13 tok/s. Cold long-prompt prefill is slow; warm cache hits ~1s.
+        Default: MTP on (speeds up greedy decode).
+
+OPTIONS (defaults tuned for coding-agent use)
+  --thinking <on|off|auto>  Default ON: model reasons before answering on every
+                       request that doesn't set its own preference (agent UIs
+                       show it as reasoning). off = never; auto = stock (off for
+                       tool-calls). Per-request enable_thinking wins.
+  --mtp / --no-mtp     MTP speculative decoding. 27b default on (helps),
+                       35b default off (acceptance decays with context).
+                       Only engages on temperature=0 requests.
+  --kv <bf16|int8|int4>  KV cache dtype. Default int8 (quality-safe to 100k).
+                       int4 is measurably slower on 27b — not recommended.
+  --cache-gb <N>       Prefix-cache budget (GB). Default 24. Bigger = more
+                       warm-context hits (cached 100k prefix answers in ~1s).
+  --prefill-step <N>   Prefill chunk size (default 2048). 8192 cuts cold
+                       long-prompt TTFT at some memory cost.
+  --turboquant         35b only: experimental K8V4 KV compression.
+  --pflash             Lossy long-prompt compression (drops ~80% of middle
+                       tokens above 32k). Off by default. Summarization only.
+  --gpu-util <0.x>     Metal memory limit as a fraction of the GPU working set
+                       (machine-relative). Default 0.85.
+  --port <N>           Port (default 8642, or env LLM_SERVE_PORT).
+  --fg                 Foreground (Ctrl-C to stop) instead of detached.
+  --vision             (not supported for Qwen3.6 here — use llm-vision)
+
+CURL — THINKING ON / OFF
+  Thinking is server-default ON. Reasoning comes back in .reasoning_content,
+  the answer in .content. Turn OFF per request:
+
+    curl -s http://127.0.0.1:8642/v1/chat/completions \
+      -H 'Content-Type: application/json' -d '{
+        "model": "default",
+        "messages": [{"role":"user","content":"Write a Python retry decorator. Just code."}],
+        "max_tokens": 1024, "temperature": 0.6,
+        "chat_template_kwargs": {"enable_thinking": false}
+      }' | python3 -c 'import json,sys; print(json.load(sys.stdin)["choices"][0]["message"]["content"])'
+
+  Force thinking ON per request (if server started with --thinking auto/off):
+    add  "chat_template_kwargs": {"enable_thinking": true}  and give max_tokens
+    headroom (reasoning traces run 3-8k chars). Streaming: add "stream": true
+    (reasoning arrives as delta.reasoning_content, answer as delta.content).
+
+Coding sampling: temperature=0.6 top_p=0.95 top_k=20.
+EOF
+}
+
+info() { printf '\033[1m%s\033[0m\n' "$*"; }
+
+write_info_file() { # MODEL_ID MODALITY KV CACHE_GB PREFILL GPU_UTIL PORT THINK
+    local ws; ws="$(_worked_set_gb)"
+    local capline="  Memory cap:          $6 x GPU working set"
+    [ -n "$ws" ] && capline="  Memory cap:          $6 x ${ws}GB working set = $("$VENV_PY" -c "print(round($6*$ws,1))")GB"
+    cat > "$INFO_FILE" <<EOF
+  Model id:            $1   (or "default")
+  Modality:            $2
+  KV cache:            $3 | prefix cache ${4}GB | prefill step $5 | thinking $8
+  Context window:      262,144 tokens
+$capline
+
+  OpenAI endpoint:     http://127.0.0.1:$7/v1
+  Anthropic endpoint:  http://127.0.0.1:$7  (/v1/messages)
+  Auth:                none (use any key string if a client requires one, e.g. "local")
+  Health / metrics:    /health/ready | /metrics | /v1/cache/stats
+
+  Client setup:
+    export OPENAI_BASE_URL=http://127.0.0.1:$7/v1
+    export OPENAI_API_KEY=local
+
+  KiloCode / Cline / Cursor : "OpenAI Compatible", Base URL http://127.0.0.1:$7/v1,
+                              key "local", model id "$1"
+  Any OpenAI SDK            : base_url as above, api_key "local"
+
+  Coding sampling: temperature=0.6 top_p=0.95 top_k=20
+  llm-serve logs | llm-serve stop | llm-serve --help
+EOF
+    printf 'PORT=%s\nMODEL_ID=%s\n' "$7" "$1" > "$STATE_FILE"
+}
+
+print_info_block() {
+    info "─────────────────────────────────────────────────────────────"
+    info " $1"
+    info "─────────────────────────────────────────────────────────────"
+    cat "$INFO_FILE"
+    info "─────────────────────────────────────────────────────────────"
+}
+
+show_running() { # want_model_id want_key
+    if [ -f "$STATE_FILE" ]; then
+        # shellcheck disable=SC1090
+        source "$STATE_FILE"
+        if curl -s -m 3 "http://127.0.0.1:${PORT}/health/ready" 2>/dev/null | grep -q '"ready":true'; then
+            print_info_block "Server already running — connection details"
+            if [ -n "${1:-}" ] && [ "$1" != "$MODEL_ID" ]; then
+                echo ""
+                echo "  NOTE: you asked for $1 but the running model is $MODEL_ID."
+                echo "        To switch:  llm-serve stop && llm-serve ${2:-<model>}"
+            fi
+            return 0
+        fi
+    fi
+    echo "A rapid-mlx server is running but not managed by llm-serve (or warming up):"
+    pgrep -fl "rapid-mlx serve" | head -2 || true
+    echo "Check:  llm-serve logs   or   llm-serve stop && llm-serve <27b|35b>"
+}
+
+case "${1:-help}" in
+    status)
+        if pgrep -f "rapid-mlx serve" >/dev/null; then show_running "" ""; else
+            echo "no rapid-mlx server running — start one with: llm-serve 27b|35b"; fi
+        exit 0 ;;
+    stop)
+        if pkill -f "rapid-mlx serve"; then
+            printf "stopping (persisting prefix cache)"
+            for _ in $(seq 1 30); do
+                pgrep -f "rapid-mlx serve" >/dev/null || { echo " — stopped"; exit 0; }
+                printf "."; sleep 1
+            done
+            echo " — still shutting down; force: pkill -9 -f 'rapid-mlx serve'"
+        else echo "no server running"; fi
+        exit 0 ;;
+    logs)  exec tail -f "$LOG_DIR/serve.log" ;;
+    27b|35b) ;;
+    -h|--help|help|*) usage; exit 0 ;;
+esac
+
+MODEL_KEY="$1"; shift
+PORT="$DEFAULT_PORT"; KV="int8"; CACHE_GB=24; PREFILL=2048; GPU_UTIL=0.85
+VISION=0; TURBOQUANT=0; PFLASH=0; FG=0; MTP="default"; THINKING="on"; EXTRA=()
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --thinking) THINKING="$2"; shift ;;
+        --mtp) MTP=1 ;;
+        --no-mtp) MTP=0 ;;
+        --vision) VISION=1 ;;
+        --kv) KV="$2"; shift ;;
+        --cache-gb) CACHE_GB="$2"; shift ;;
+        --prefill-step) PREFILL="$2"; shift ;;
+        --turboquant) TURBOQUANT=1 ;;
+        --pflash) PFLASH=1 ;;
+        --gpu-util) GPU_UTIL="$2"; shift ;;
+        --port) PORT="$2"; shift ;;
+        --fg) FG=1 ;;
+        --) shift; EXTRA+=("$@"); break ;;
+        *) EXTRA+=("$1") ;;
+    esac
+    shift
+done
+
+if [ "$MODEL_KEY" = "27b" ]; then
+    MODEL="unsloth/Qwen3.6-27B-MLX-8bit"; MODEL_ID="$MODEL"; SIDECAR="$SIDECARS/27b"
+    [ "$MTP" = "default" ] && MTP=1
+else
+    MODEL="unsloth/Qwen3.6-35B-A3B-MLX-8bit"; MODEL_ID="$MODEL"; SIDECAR="$SIDECARS/35b"
+    [ "$MTP" = "default" ] && MTP=0
+fi
+
+if [ "$VISION" = "1" ]; then
+    cat >&2 <<'EOF'
+error: Rapid-MLX's --mllm lane cannot serve Qwen3.6 (hybrid GatedDeltaNet
+backbone, upstream #352). For image input use the companion command:
+    llm-vision <image-path> "question about the image"
+EOF
+    exit 1
+fi
+
+if pgrep -f "rapid-mlx serve" >/dev/null; then
+    show_running "$MODEL_ID" "$MODEL_KEY"; exit 0
+fi
+
+ARGS=(serve "$MODEL" --host 127.0.0.1 --port "$PORT"
+    --gpu-memory-utilization "$GPU_UTIL"
+    --kv-cache-dtype "$KV"
+    --cache-memory-mb "$((CACHE_GB * 1024))"
+    --prefill-step-size "$PREFILL"
+    --enable-auto-tool-choice --tool-call-parser qwen3_coder_xml --reasoning-parser qwen3
+)
+[ "$PFLASH" = "1" ] && ARGS+=(--pflash always) || ARGS+=(--pflash off)
+if [ "$MODEL_KEY" = "35b" ]; then
+    [ "$TURBOQUANT" = "1" ] && ARGS+=(--kv-cache-turboquant k8v4) || ARGS+=(--kv-cache-turboquant none)
+fi
+
+MODALITY="text + tools"
+if [ "$MTP" = "1" ]; then
+    if [ -f "$SIDECAR/model-mtp.safetensors" ]; then
+        ARGS+=(--spec-decode mtp --force-spec-decode --mtp-disable-auto-k --mtp-sidecar "$SIDECAR")
+        MODALITY="text + tools + MTP"
+    else
+        echo "note: MTP sidecar not found at $SIDECAR — starting without MTP"
+        echo "      (build it: python scripts/build_mtp_sidecars.py --only $MODEL_KEY)"
+    fi
+fi
+ARGS+=(${EXTRA[@]+"${EXTRA[@]}"})
+
+THINK_ENV=""
+case "$THINKING" in
+    on)   THINK_ENV="RAPID_MLX_DEFAULT_THINKING=1"; MODALITY="$MODALITY + thinking-default" ;;
+    off)  ARGS+=(--no-thinking) ;;
+    auto) ;;
+    *) echo "invalid --thinking '$THINKING' (use on|off|auto)"; exit 1 ;;
+esac
+
+echo "Starting: ${THINK_ENV:+$THINK_ENV }rapid-mlx ${ARGS[*]}"
+if [ "$FG" = "1" ]; then
+    write_info_file "$MODEL_ID" "$MODALITY" "$KV" "$CACHE_GB" "$PREFILL" "$GPU_UTIL" "$PORT" "$THINKING"
+    exec env RAPID_MLX_TELEMETRY=0 ${THINK_ENV:+$THINK_ENV} "$RAPID" "${ARGS[@]}"
+fi
+
+RAPID_MLX_TELEMETRY=0 ${THINK_ENV:+env $THINK_ENV} nohup "$RAPID" "${ARGS[@]}" >"$LOG_DIR/serve.log" 2>&1 &
+echo $! > "$PID_FILE"
+
+printf "Loading %s (30-90s)" "$MODEL_ID"
+for _ in $(seq 1 150); do
+    if curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$PORT/health/ready" 2>/dev/null | grep -q 200; then
+        echo ""
+        write_info_file "$MODEL_ID" "$MODALITY" "$KV" "$CACHE_GB" "$PREFILL" "$GPU_UTIL" "$PORT" "$THINKING"
+        print_info_block "Local LLM server ready"
+        exit 0
+    fi
+    if ! kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
+        echo ""; echo "Server exited during startup — last log lines:"; tail -15 "$LOG_DIR/serve.log"; exit 1
+    fi
+    printf "."; sleep 3
+done
+echo ""; echo "Timed out — check: llm-serve logs"; exit 1
