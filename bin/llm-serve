@@ -76,7 +76,10 @@ OPTIONS (defaults tuned for coding-agent use)
                        warm-context hits (cached 100k prefix answers in ~1s).
   --prefill-step <N>   Prefill chunk size (default 2048). 8192 cuts cold
                        long-prompt TTFT at some memory cost.
-  --turboquant         35b only: experimental K8V4 KV compression.
+  --turboquant         35b only: K8V4 KV compression. Measured +7-16% decode
+                       at 16k-64k ctx (grows with length) but ~3GB more RAM at
+                       64k; negligible at short ctx. Worth it for sustained
+                       long-context work, off by default.
   --pflash             Lossy long-prompt compression (drops ~80% of middle
                        tokens above 32k). Off by default. Summarization only.
   --gpu-util <0.x>     Metal memory limit as a fraction of the GPU working set

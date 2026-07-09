@@ -76,3 +76,42 @@ short context** — which is why `llm-serve` defaults MTP **on for 27b, off for
 Via `llm-vision` (mlx-vlm): a 1920×1080 code screenshot is ~2,080 image tokens,
 prefills at ~680 tok/s, generates at ~75 tok/s, ~40GB peak RAM. Correctly reads
 code and identifies bugs from screenshots.
+
+## Additional perf-lever A/Bs
+
+Measured on the same M4 Max after the main sweep. (Decode tok/s is the clean
+metric here — the disk prefix cache persists across server restarts, so
+"cold" TTFT on the *second* config to serve a given model can be contaminated;
+decode is unaffected.)
+
+### TurboQuant K8V4 KV — `llm-serve 35b --turboquant`
+
+K8V4 (K 8-bit Hadamard + V 4-bit Lloyd-Max) vs our int8-KV default, 35B decode:
+
+| context | int8 (default) | K8V4 | K8V4 RSS |
+|---|---|---|---|
+| 1k  | 76.4 | 77.7 | 35.3 GB |
+| 16k | 65.8 | 70.5 | 35.7 GB |
+| 32k | 62.3 | 63.3 | 36.4 GB |
+| 64k | 47.5 | **55.0** | 38.3 GB |
+
+The decode gain grows with context (+2% @1k → +16% @64k) as KV bandwidth starts
+to matter — but K8V4 uses **~3 GB more RAM** at 64k (its transform/codebook
+buffers outweigh the KV it saves, since KV is already tiny on this hybrid arch).
+Needle retrieval still passes at 32k. **Verdict:** a worthwhile opt-in for
+sustained long-context (32k+) work, not worth changing the default given the
+RAM cost and near-zero benefit at short context.
+
+### prefill-step 8192 vs 2048 (27B) — no effect
+
+Aimed at the 27B's slow cold long-prompt prefill. Result: **null.**
+
+| context | step 2048 (default) | step 8192 |
+|---|---|---|
+| 32k cold TTFT | 206 s | 205 s |
+| 64k cold TTFT | 470 s | 489 s |
+
+Raising the prefill chunk size does not help (marginally worse at 64k). The
+27B's cold-prefill cost is compute-bound (hybrid GatedDeltaNet + full-attention
+prefill), not chunk-size-limited. Keep the default; the real mitigation for slow
+long-prompt cold starts is the prefix cache (warm hits are ~1 s).
