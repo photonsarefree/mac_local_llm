@@ -163,11 +163,12 @@ behavior — off for tool-calls, on otherwise). See `llm-serve --help`.
 
 | flag | default | note |
 |------|---------|------|
+| `--6bit` | off | 35b: 6-bit weights — +7–13% decode, ~8GB less RAM, quality intact ([measured](docs/BENCHMARKS.md)). Great on 32–48GB Macs |
 | `--kv bf16\|int8\|int4` | int8 | int8 is quality-safe to 100k; int4 slower on 27b |
 | `--mtp` / `--no-mtp` | 27b on, 35b off | MTP helps 27b + short-context; decays with length |
 | `--cache-gb N` | 24 | prefix cache — a cached 100k prefix answers in ~1s vs minutes cold |
-| `--prefill-step N` | 2048 | raise (8192) to cut cold long-prompt TTFT |
-| `--turboquant` | off | 35b experimental KV compression |
+| `--prefill-step N` | 2048 | measured no-op on these models (cold prefill is compute-bound) |
+| `--turboquant` | off | 35b: K8V4 KV compression — +7–16% decode at long ctx, ~3GB more RAM |
 | `--gpu-util 0.x` | 0.85 | fraction of GPU working set (machine-relative) |
 
 ## MTP sidecars

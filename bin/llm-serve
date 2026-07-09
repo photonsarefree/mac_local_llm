@@ -58,11 +58,16 @@ USAGE
 MODELS  (RAM: 27b needs ~40GB free, 35b ~44GB; 64GB+ Macs recommended)
   35b   unsloth/Qwen3.6-35B-A3B-MLX-8bit  MoE (3B active) — fastest.
         ~75 tok/s @1k ctx, 71 @16k, 64 @32k. Default: MTP off.
+        Add --6bit for the 6-bit variant: +7-13% decode, ~8GB less RAM,
+        quality intact (needle + tool-calls pass). Great on 32-48GB Macs.
   27b   unsloth/Qwen3.6-27B-MLX-8bit      dense — strongest quality.
         ~13 tok/s. Cold long-prompt prefill is slow; warm cache hits ~1s.
         Default: MTP on (speeds up greedy decode).
 
 OPTIONS (defaults tuned for coding-agent use)
+  --6bit               (35b) use mlx-community/Qwen3.6-35B-A3B-6bit: faster +
+                       ~8GB lighter than 8-bit, quality intact in testing.
+                       First run: hf download mlx-community/Qwen3.6-35B-A3B-6bit
   --thinking <on|off|auto>  Default ON: model reasons before answering on every
                        request that doesn't set its own preference (agent UIs
                        show it as reasoning). off = never; auto = stock (off for
@@ -190,11 +195,12 @@ esac
 
 MODEL_KEY="$1"; shift
 PORT="$DEFAULT_PORT"; KV="int8"; CACHE_GB=24; PREFILL=2048; GPU_UTIL=0.85
-VISION=0; TURBOQUANT=0; PFLASH=0; FG=0; MTP="default"; THINKING="on"; EXTRA=()
+VISION=0; TURBOQUANT=0; PFLASH=0; FG=0; MTP="default"; THINKING="on"; SIXBIT=0; EXTRA=()
 
 while [ $# -gt 0 ]; do
     case "$1" in
         --thinking) THINKING="$2"; shift ;;
+        --6bit) SIXBIT=1 ;;
         --mtp) MTP=1 ;;
         --no-mtp) MTP=0 ;;
         --vision) VISION=1 ;;
@@ -215,6 +221,12 @@ done
 if [ "$MODEL_KEY" = "27b" ]; then
     MODEL="unsloth/Qwen3.6-27B-MLX-8bit"; MODEL_ID="$MODEL"; SIDECAR="$SIDECARS/27b"
     [ "$MTP" = "default" ] && MTP=1
+    [ "$SIXBIT" = "1" ] && echo "note: --6bit applies to the 35b model; ignoring for 27b"
+elif [ "$SIXBIT" = "1" ]; then
+    # 6-bit 35B: measured +7-13% decode and ~8GB less RAM than 8-bit, needle +
+    # tool-call formatting intact. Needs: hf download mlx-community/Qwen3.6-35B-A3B-6bit
+    MODEL="mlx-community/Qwen3.6-35B-A3B-6bit"; MODEL_ID="$MODEL"; SIDECAR="$SIDECARS/35b-6bit"
+    MTP=0
 else
     MODEL="unsloth/Qwen3.6-35B-A3B-MLX-8bit"; MODEL_ID="$MODEL"; SIDECAR="$SIDECARS/35b"
     [ "$MTP" = "default" ] && MTP=0

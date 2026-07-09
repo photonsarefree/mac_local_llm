@@ -115,3 +115,30 @@ Raising the prefill chunk size does not help (marginally worse at 64k). The
 27B's cold-prefill cost is compute-bound (hybrid GatedDeltaNet + full-attention
 prefill), not chunk-size-limited. Keep the default; the real mitigation for slow
 long-prompt cold starts is the prefix cache (warm hits are ~1 s).
+
+### 6-bit vs 8-bit (35B) — `llm-serve 35b --6bit`
+
+`mlx-community/Qwen3.6-35B-A3B-6bit` vs the 8-bit default:
+
+| context | 8-bit decode | 6-bit decode | 6-bit RSS |
+|---|---|---|---|
+| 1k  | 76.4 | **82.1** (+7%) | 27.1 GB |
+| 16k | 65.8 | **74.5** (+13%) | 27.1 GB |
+| 32k | 62.3 | **66.6** (+7%) | 27.1 GB |
+
+6-bit is **faster at every context and uses ~8 GB less RAM** (27 vs 35 GB, ~23%
+less) — the win comes from lower weight-read bandwidth per token. Quality held up
+in testing:
+
+- **Needle retrieval @32k: PASS** (same planted-constant probe as the main sweep).
+- **Tool-call formatting: PASS** — the exact 2-tool composition that makes plain
+  4-bit ramble 4000+ tokens with no `<tool_call>` produced a valid tool call
+  here, even with thinking on. (This is why 6-bit, not 4-bit, is the one to use:
+  4-bit breaks strict tool-call output on this model.)
+- Coding output: correct on spot checks.
+
+**Verdict:** 6-bit is a strong option — arguably the better daily driver on
+RAM-constrained Macs (32–48 GB), where the 8-bit's ~35 GB is tight. The 8-bit
+remains the max-quality reference (6-bit quality was spot-checked, not
+exhaustively evaluated). Note MTP isn't wired for the 6-bit build (would need a
+6-bit-matched sidecar), but 35B defaults MTP off anyway.
