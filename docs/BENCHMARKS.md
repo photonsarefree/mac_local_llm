@@ -184,3 +184,14 @@ needs its own compiled-path support, and compile warm-up must run outside
 the draft-depth controller's timing window or the controller misprices
 drafting and stops speculating (a regression that output fingerprints
 cannot catch, since parked speculation is still correct).
+
+## Defaults alignment (2026-07-11)
+
+Two levers promoted to defaults after isolated verification on the full
+stack: the MoE gate/up fusion moved into the engine fork (token-exact,
+anchor fingerprint unchanged, +0.7%), and K8V4 KV compression became the
+35b default (back-to-back on/off at short context: 114.5 vs 114.2 tok/s,
+identical outputs; needle retrieval verified at 16k and 32k; the launcher
+now switches the KV base to bf16 under K8V4 so nothing quantizes twice).
+The served configuration and the published numbers now come from the same
+code path.

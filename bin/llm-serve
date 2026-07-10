@@ -84,10 +84,11 @@ OPTIONS (defaults tuned for coding-agent use)
                        warm-context hits (cached 100k prefix answers in ~1s).
   --prefill-step <N>   Prefill chunk size (default 2048). 8192 cuts cold
                        long-prompt TTFT at some memory cost.
-  --turboquant         35b only: K8V4 KV compression. Measured +7-16% decode
-                       at 16k-64k ctx (grows with length) but ~3GB more RAM at
-                       64k; negligible at short ctx. Worth it for sustained
-                       long-context work, off by default.
+  --turboquant / --no-turboquant
+                       35b: K8V4 KV compression, ON by default. Measured
+                       +7-16% decode at 16k-64k contexts, neutral at short
+                       contexts (retrieval verified at 32k), ~3GB more RAM
+                       at 64k. --no-turboquant restores plain int8 KV.
   --pflash             Lossy long-prompt compression (drops ~80% of middle
                        tokens above 32k). Off by default. Summarization only.
   --gpu-util <0.x>     Metal memory limit as a fraction of the GPU working set
@@ -198,7 +199,7 @@ esac
 
 MODEL_KEY="$1"; shift
 PORT="$DEFAULT_PORT"; KV="int8"; CACHE_GB=24; PREFILL=2048; GPU_UTIL=0.85
-VISION=0; TURBOQUANT=0; PFLASH=0; FG=0; MTP="default"; THINKING="on"; SIXBIT=0; EXTRA=()
+VISION=0; TURBOQUANT=1; KV_EXPLICIT=0; PFLASH=0; FG=0; MTP="default"; THINKING="on"; SIXBIT=0; EXTRA=()
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -207,10 +208,11 @@ while [ $# -gt 0 ]; do
         --mtp) MTP=1 ;;
         --no-mtp) MTP=0 ;;
         --vision) VISION=1 ;;
-        --kv) KV="$2"; shift ;;
+        --kv) KV="$2"; KV_EXPLICIT=1; shift ;;
         --cache-gb) CACHE_GB="$2"; shift ;;
         --prefill-step) PREFILL="$2"; shift ;;
         --turboquant) TURBOQUANT=1 ;;
+        --no-turboquant) TURBOQUANT=0 ;;
         --pflash) PFLASH=1 ;;
         --gpu-util) GPU_UTIL="$2"; shift ;;
         --port) PORT="$2"; shift ;;
@@ -260,7 +262,19 @@ ARGS=(serve "$MODEL" --host 127.0.0.1 --port "$PORT"
 )
 [ "$PFLASH" = "1" ] && ARGS+=(--pflash always) || ARGS+=(--pflash off)
 if [ "$MODEL_KEY" = "35b" ]; then
-    [ "$TURBOQUANT" = "1" ] && ARGS+=(--kv-cache-turboquant k8v4) || ARGS+=(--kv-cache-turboquant none)
+    if [ "$TURBOQUANT" = "1" ]; then
+        ARGS+=(--kv-cache-turboquant k8v4)
+        # K8V4 compresses from a bf16 base; an int8 base would quantize twice.
+        # Respect an explicit --kv choice, otherwise switch the base to bf16.
+        if [ "$KV_EXPLICIT" != "1" ]; then
+            KV="bf16"
+            for i in "${!ARGS[@]}"; do
+                [ "${ARGS[$i]}" = "--kv-cache-dtype" ] && ARGS[$((i+1))]="bf16"
+            done
+        fi
+    else
+        ARGS+=(--kv-cache-turboquant none)
+    fi
 fi
 
 MODALITY="text + tools"

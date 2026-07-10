@@ -31,13 +31,13 @@ The gap comes from the lever stack below.
 | async draft submission | on by default in the fork | +11% greedy and sampled. The GPU runs the drafter while the CPU prepares the verification pass |
 | compiled verification pass | `RAPID_MLX_MTP_COMPILED_VERIFY=1` (set by `llm-serve`) | +9 to 12%. The verification forward is compiled once and replayed, removing ~4 ms of per-round graph construction; verified bit-exact, with compile warm-up kept out of the depth controller's cost window |
 | sampled-request speculation | on by default in the fork | sampled traffic previously fell back to plain decoding at 77 tok/s. Exact acceptance math keeps the output distribution unchanged. Seeded requests still use plain decoding so seeds stay reproducible |
-| KV cache | int8 (default), `--turboquant` K8V4 for 16k+ contexts | int8 verified by needle retrieval at 100k tokens. K8V4 adds 7 to 16% at long context |
+| KV cache | K8V4 compression over a bf16 base (default; `--no-turboquant` for plain int8) | +7 to 16% at 16k to 64k context, neutral at short context (on/off measured 114.5 vs 114.2 back-to-back), retrieval verified at 16k and 32k; int8 separately verified at 100k |
 | thinking mode | default on via `RAPID_MLX_DEFAULT_THINKING=1` | stock builds silently strip reasoning from tool-calling requests |
 | prompt handling | `--pflash off` for coding | PFlash is lossy prompt compression. Wrong trade for code |
 
-One optional extra lives outside this repo: fusing the MoE gate and up
-projections adds 0.7% and requires the config-driven pipeline rather than
-`llm-serve`. Everything else above is active out of the box.
+The MoE gate/up projection fusion (+0.7%, token-exact) now runs inside the
+engine fork and is on by default, so every lever above is active out of the
+box with `llm-serve`.
 
 ## Reproduce it
 
