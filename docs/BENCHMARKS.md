@@ -164,3 +164,10 @@ across every MTP variant (lossless gate). Short-context, 35B 8-bit, M4 Max.
   AR 61/55/48 and MTP-D2 76/65/49-44 at 1k/16k/32k on our review-prompt
   harness — Rapid-MLX remains faster at every point; its D2-over-D1
   mechanism (depth-2 + drafter-hidden recursion) is what the fork lifts.
+
+## Final pre-drafter stack (2026-07-11)
+
+Anchor bench (fixed greedy coding prompt, fresh server per run, outputs
+fingerprint-identical across the whole series): baseline 75.4 -> full stack
+**101.7 tok/s**. 300-token completion runs: ~103 greedy code / ~95 sampled
+(temperature 0.6) / ~77 prose.

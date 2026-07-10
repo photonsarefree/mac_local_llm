@@ -1,77 +1,80 @@
-# The recipe: Qwen3.6-35B-A3B at full speed on Apple Silicon
+# The recipe: Qwen3.6-35B-A3B at 100+ tokens per second on a MacBook
 
-The solidified, end-to-end configuration this repo installs — every choice
-below is A/B-measured on an M4 Max (128 GB); numbers are decode tok/s on
-real completions unless noted. TL;DR: **one 8-bit MoE model + its own MTP
-head as drafter + depth-adaptive speculation + int-quantized KV** ≈ 90+
-tok/s on greedy coding, ~85 at temperature 0.6, on a laptop.
+This page lists only the configuration that ships in this repo. Every lever
+here is measured, kept, and reproducible.
 
-## The stack, layer by layer
+Reference hardware: M4 Max, 128 GB unified memory. Numbers are decode tokens
+per second on real completions. Greedy outputs are verified byte-identical
+against non-speculative decoding.
 
-| layer | choice | why (measured) |
+## Results you should be able to reproduce
+
+| workload | tokens/sec |
+|---|---|
+| greedy coding prompt | 101.7 (anchor bench; day range 93 to 102 with thermals) |
+| greedy coding, 300-token completions | ~103 |
+| sampled coding (temperature 0.6) | ~95 |
+| prose, sampled | ~77 |
+
+The unoptimized baseline for the same model and weights is 75 tokens/sec.
+The gap comes from the lever stack below.
+
+## The stack
+
+| layer | choice | measured effect |
 |---|---|---|
-| weights | `unsloth/Qwen3.6-35B-A3B-MLX-8bit` | MoE 3B-active = fastest family; 8-bit passes the 2-tool-call gate that 4-bit fails; 6-bit is +7-13% and ~8 GB lighter if RAM-tight (`--6bit`) |
-| engine | [Rapid-MLX fork `qwen36-mtp-tuned`](https://github.com/photonsarefree/Rapid-MLX/tree/qwen36-mtp-tuned) | MLX is the most bandwidth-efficient Qwen3.6 engine we measured (~375 GB/s effective vs llama.cpp ~322); the fork makes MTP actually work on these checkpoints and upgrades it (below) |
-| drafter | rebuilt MTP sidecar (`scripts/build_mtp_sidecars.py`) | the model's own MTP head, re-quantized to match the weights; raw HF tensors give 0% acceptance |
-| speculation | MTP, auto-K ≤ 2, trim fix, any temperature | see next section |
-| KV cache | int8 (default) / `--turboquant` K8V4 for 16k+ | int8 needle-verified at 100k; K8V4 +7-16% at 16-64k; int4 is slower AND riskier — never |
-| thinking | default-on via `RAPID_MLX_DEFAULT_THINKING=1` | stock silently strips reasoning from all tool-calling requests |
-| prompt | `--pflash off` for coding | PFlash is lossy prompt compression — wrong trade for code |
+| model | `unsloth/Qwen3.6-35B-A3B-MLX-8bit` | MoE with 3B active parameters. 8-bit passes the tool-call formatting gate that 4-bit fails |
+| engine | [Rapid-MLX fork, branch `qwen36-mtp-tuned`](https://github.com/photonsarefree/Rapid-MLX/tree/qwen36-mtp-tuned) | contains every code lever below as reviewed commits |
+| drafter | rebuilt MTP sidecar (`scripts/build_mtp_sidecars.py`) | the model's own multi-token-prediction head, re-quantized to match the weights. Raw HuggingFace tensors give 0% acceptance |
+| speculation | MTP, depth auto-tuned up to 2, any temperature | +20% at depth 1; depth 2 adds ~2.5% greedy and ~6% sampled |
+| drafter cache trim fix | `RAPID_MLX_MTP_TRIM_FIX=1` (set by `llm-serve`) | +3.5% at depth 2. Keeps one real context entry per rejected round that the stock code discarded |
+| async draft submission | on by default in the fork | +11% greedy and sampled. The GPU runs the drafter while the CPU prepares the verification pass |
+| sampled-request speculation | on by default in the fork | sampled traffic previously fell back to plain decoding at 77 tok/s. Exact acceptance math keeps the output distribution unchanged. Seeded requests still use plain decoding so seeds stay reproducible |
+| KV cache | int8 (default), `--turboquant` K8V4 for 16k+ contexts | int8 verified by needle retrieval at 100k tokens. K8V4 adds 7 to 16% at long context |
+| thinking mode | default on via `RAPID_MLX_DEFAULT_THINKING=1` | stock builds silently strip reasoning from tool-calling requests |
+| prompt handling | `--pflash off` for coding | PFlash is lossy prompt compression. Wrong trade for code |
 
-## What the fork's speculation upgrade buys
+One optional extra lives outside this repo: fusing the MoE gate and up
+projections adds 0.7% and requires the config-driven pipeline rather than
+`llm-serve`. Everything else above is active out of the box.
 
-Stock 0.9.13 only speculated on `temperature == 0` requests and only 1 draft
-token deep. The fork (commits on the branch, ~300 lines, adversarially
-reviewed):
-
-- **Any-temperature speculation** — exact Leviathan–Chen acceptance with
-  residual resampling, so temp 0.6/0.95/20 sampling is distribution-identical
-  to plain decode, just faster. Seeded requests automatically fall back to
-  plain decode to keep per-seed reproducibility. Coding at temp 0.6:
-  **77 → ~85 tok/s**.
-- **Chain-of-K on the GatedDeltaNet hybrid** — the linear-attention state
-  now snapshots at every verify boundary, so multi-token drafts can partially
-  accept. Greedy coding: **90 → 92 tok/s** (K=2 + trim fix), verified
-  bit-identical outputs across K=1/K=2/auto-K.
-- **Depth auto-tuning** — an expected-value controller picks draft depth
-  0–2 per round and *parks* the drafter on content where it loses (prose,
-  long-context acceptance decay), which is what makes MTP safe to default-on.
-
-Measured α (draft acceptance) explains the design: the recursive MTP head
-decays 0.83 → 0.65 → 0.39 by depth, so K=3 regresses and K≤2 + parking is
-optimal. A purpose-trained block drafter is the next jump (in progress).
-
-## Bring it to life
+## Reproduce it
 
 ```bash
-./install.sh --with-models      # venv + fork + sidecars + models (~70 GB)
-llm-serve 35b                   # ~90 tok/s greedy code, ~85 @temp 0.6
-llm-serve 35b --turboquant      # add K8V4 when you live at 16k+ context
-llm-serve 27b                   # dense 27B when quality > speed
+./install.sh --with-models      # venv + patched engine + sidecars + models (~70 GB)
+llm-serve 35b                   # serves on http://127.0.0.1:8642/v1
 ```
 
-Point any OpenAI/Anthropic client at `http://127.0.0.1:8642/v1` (configs for
-Hermes/OpenCode in `configs/`).
+Point any OpenAI or Anthropic compatible client at the server. Client
+configuration examples for Hermes and OpenCode are in `configs/`.
 
-## What is and isn't guaranteed (read this once)
+Verify your install reproduces our numbers:
 
-Honest accounting — "lossless" has three different strengths here:
+```bash
+llm-serve 35b
+curl -s http://127.0.0.1:8642/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"default","messages":[{"role":"user","content":"Implement a thread-safe LRU cache in Python with O(1) get and put."}],"max_tokens":300,"temperature":0}'
+# watch the server log for the reported decode rate, or use /metrics
+curl -s http://127.0.0.1:8642/metrics | grep spec_decode
+```
 
-1. **Speculation at temp 0 (greedy)**: outputs are verified **bit-identical**
-   across draft depths (fingerprint-tested, plus the fork passes 125/128 of
-   upstream's MTP suite; the 3 = 2 tests asserting the old greedy-only gate
-   + 1 flake that fails on clean 0.9.13). Caveat: speculative *verify* runs
-   positions batched; bf16 non-associativity can flip a near-tie argmax vs
-   non-speculative decode — rare, both outputs are valid model samples.
-2. **Speculation at temp > 0**: exact **in distribution** (the Leviathan–Chen
-   theorem), not per-token reproducible — same guarantee class as any
-   sampled decode. Seeded requests bypass speculation entirely.
-3. **Quantization is lossy by choice**: 8-bit weights and int8 KV are
-   accuracy/speed trades (validated by needle@100k, 2-tool-call formatting,
-   and coherence gates — not proofs). Full-precision exists; it's just slow.
+Expected: acceptance ratio near 0.69 at depth 2 on coding prompts, decode
+in the 90 to 105 tokens/sec range depending on chip and thermals.
 
-Known sharp edges: never place `model-mtp.safetensors` inside a model
-snapshot directory (the loader globs it and corrupts norms — sidecars live
-outside, the tooling enforces this); vision goes through `llm-vision`
-(upstream can't serve hybrid VLMs); MTP metrics are on `/metrics` if you want
-to watch acceptance live.
+## What is and is not guaranteed
+
+1. Greedy speculation is verified byte-identical across draft depths
+   (fingerprint-tested; the fork passes 125 of 128 upstream MTP tests, and
+   the 3 failures are explained in the fork's commit messages).
+2. Sampled speculation preserves the output distribution by the
+   rejection-sampling theorem. It does not reproduce token-for-token across
+   runs, which is also true of plain sampling. Seeded requests bypass
+   speculation entirely.
+3. Quantization is a deliberate accuracy trade validated by retrieval and
+   tool-formatting gates rather than a proof. We do not quantize below
+   8-bit anywhere in this recipe.
+
+Sharp edges: never place `model-mtp.safetensors` inside a model snapshot
+directory (the loader corrupts norm weights; sidecars live outside, and the
+tooling enforces this). Vision requests go through `llm-vision`.

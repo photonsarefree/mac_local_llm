@@ -9,7 +9,7 @@ Two models, both 8-bit MLX, both vision-capable, both 262K context:
 
 | key   | model | strengths | decode speed* |
 |-------|-------|-----------|---------------|
-| `35b` | Qwen3.6-35B-A3B (MoE, 3B active) | **fastest** — daily driver | ~90 tok/s greedy code, ~85 @temp 0.6, 64+ @32k |
+| `35b` | Qwen3.6-35B-A3B (MoE, 3B active) | **fastest** — daily driver | ~100 tok/s greedy code, ~95 @temp 0.6, 64+ @32k |
 | `27b` | Qwen3.6-27B (dense) | **strongest quality** | ~13 tok/s (MTP on) |
 
 *Measured on an M4 Max, 128GB, int8 KV. See [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
@@ -20,7 +20,7 @@ This repo adds, on top of stock Rapid-MLX 0.9.13 (via a pinned
   rapid-mlx rejects them / no-ops silently — code fixes + rebuilt drafter
   sidecars are applied automatically).
 - **Upgraded speculation**: engages at any temperature (exact Leviathan-Chen
-  acceptance — sampled agent traffic went 77→~85 tok/s), drafts up to 2 deep
+  acceptance — sampled agent traffic went 77→~95 tok/s), drafts up to 2 deep
   with per-round depth auto-tuning on the GatedDeltaNet hybrid, verified
   bit-identical at greedy. Full story: [docs/RECIPE.md](docs/RECIPE.md).
 - **Thinking-by-default** so agent UIs actually see the model's reasoning.

@@ -8,3 +8,6 @@ logs/
 mtp_sidecars/
 *.safetensors
 .DS_Store
+# local research logs and drafts, never published
+docs/LESSONS.md
+docs/tutorial/
