@@ -57,7 +57,8 @@ USAGE
 
 MODELS  (RAM: 27b needs ~40GB free, 35b ~44GB; 64GB+ Macs recommended)
   35b   unsloth/Qwen3.6-35B-A3B-MLX-8bit  MoE (3B active) — fastest.
-        ~75 tok/s @1k ctx, 71 @16k, 64 @32k. Default: MTP off.
+        ~100+ tok/s @1k ctx greedy with the full stack. Default: MTP on
+        (auto depth up to 2, compiled verify, any temperature).
         Add --6bit for the 6-bit variant: +7-13% decode, ~8GB less RAM,
         quality intact (needle + tool-calls pass). Great on 32-48GB Macs.
   27b   unsloth/Qwen3.6-27B-MLX-8bit      dense — strongest quality.
@@ -72,9 +73,11 @@ OPTIONS (defaults tuned for coding-agent use)
                        request that doesn't set its own preference (agent UIs
                        show it as reasoning). off = never; auto = stock (off for
                        tool-calls). Per-request enable_thinking wins.
-  --mtp / --no-mtp     MTP speculative decoding. 27b default on (helps),
-                       35b default off (acceptance decays with context).
-                       Only engages on temperature=0 requests.
+  --mtp / --no-mtp     MTP speculative decoding. Default on for both models.
+                       Depth auto-tunes up to 2 and stops drafting where it
+                       loses (prose, decayed long-context acceptance).
+                       Engages at any temperature; seeded sampled requests
+                       fall back to plain decoding for reproducibility.
   --kv <bf16|int8|int4>  KV cache dtype. Default int8 (quality-safe to 100k).
                        int4 is measurably slower on 27b — not recommended.
   --cache-gb <N>       Prefix-cache budget (GB). Default 24. Bigger = more
@@ -269,6 +272,8 @@ if [ "$MTP" = "1" ]; then
         # Speculation now engages at ANY temperature (exact Leviathan-Chen
         # accept); seeded temp>0 requests fall back to plain decode.
         export RAPID_MLX_MTP_TRIM_FIX=1
+        # compiled verify forward: bit-exact, +9-12% measured
+        export RAPID_MLX_MTP_COMPILED_VERIFY=1
         ARGS+=(--spec-decode mtp --force-spec-decode --mtp-max-k 2 --mtp-sidecar "$SIDECAR")
         MODALITY="text + tools + MTP(auto-K2)"
     else

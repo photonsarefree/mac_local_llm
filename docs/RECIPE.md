@@ -11,10 +11,10 @@ against non-speculative decoding.
 
 | workload | tokens/sec |
 |---|---|
-| greedy coding prompt | 101.7 (anchor bench; day range 93 to 102 with thermals) |
-| greedy coding, 300-token completions | ~103 |
-| sampled coding (temperature 0.6) | ~95 |
-| prose, sampled | ~77 |
+| greedy coding prompt | 105 to 109 (anchor bench, thermals move it a few points) |
+| greedy coding, 300-token completions | ~110 |
+| sampled coding (temperature 0.6) | ~100 |
+| prose, sampled | ~81 |
 
 The unoptimized baseline for the same model and weights is 75 tokens/sec.
 The gap comes from the lever stack below.
@@ -29,6 +29,7 @@ The gap comes from the lever stack below.
 | speculation | MTP, depth auto-tuned up to 2, any temperature | +20% at depth 1; depth 2 adds ~2.5% greedy and ~6% sampled |
 | drafter cache trim fix | `RAPID_MLX_MTP_TRIM_FIX=1` (set by `llm-serve`) | +3.5% at depth 2. Keeps one real context entry per rejected round that the stock code discarded |
 | async draft submission | on by default in the fork | +11% greedy and sampled. The GPU runs the drafter while the CPU prepares the verification pass |
+| compiled verification pass | `RAPID_MLX_MTP_COMPILED_VERIFY=1` (set by `llm-serve`) | +9 to 12%. The verification forward is compiled once and replayed, removing ~4 ms of per-round graph construction; verified bit-exact, with compile warm-up kept out of the depth controller's cost window |
 | sampled-request speculation | on by default in the fork | sampled traffic previously fell back to plain decoding at 77 tok/s. Exact acceptance math keeps the output distribution unchanged. Seeded requests still use plain decoding so seeds stay reproducible |
 | KV cache | int8 (default), `--turboquant` K8V4 for 16k+ contexts | int8 verified by needle retrieval at 100k tokens. K8V4 adds 7 to 16% at long context |
 | thinking mode | default on via `RAPID_MLX_DEFAULT_THINKING=1` | stock builds silently strip reasoning from tool-calling requests |
@@ -60,7 +61,7 @@ curl -s http://127.0.0.1:8642/metrics | grep spec_decode
 ```
 
 Expected: acceptance ratio near 0.69 at depth 2 on coding prompts, decode
-in the 90 to 105 tokens/sec range depending on chip and thermals.
+in the 100 to 110 tokens/sec range on an M4 Max depending on thermals.
 
 ## What is and is not guaranteed
 

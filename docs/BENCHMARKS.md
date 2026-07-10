@@ -171,3 +171,16 @@ Anchor bench (fixed greedy coding prompt, fresh server per run, outputs
 fingerprint-identical across the whole series): baseline 75.4 -> full stack
 **101.7 tok/s**. 300-token completion runs: ~103 greedy code / ~95 sampled
 (temperature 0.6) / ~77 prose.
+
+## Compiled verification pass (2026-07-11)
+
+The speculative verification forward is now compiled once and replayed
+(gated by RAPID_MLX_MTP_COMPILED_VERIFY, on by default in llm-serve).
+Anchor bench on/off: 96.6 -> 108.6 tokens/sec, outputs byte-identical.
+300-token completions on the full stack: ~110 greedy code, ~100 sampled
+coding at temperature 0.6, ~81 sampled prose. Two implementation notes for
+reproducers: the server decode path uses a batched KV cache class that
+needs its own compiled-path support, and compile warm-up must run outside
+the draft-depth controller's timing window or the controller misprices
+drafting and stops speculating (a regression that output fingerprints
+cannot catch, since parked speculation is still correct).
