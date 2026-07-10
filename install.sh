@@ -56,15 +56,25 @@ PIP="$RAPID_MLX_VENV/bin/pip"
 VENV_PY="$RAPID_MLX_VENV/bin/python"
 "$PIP" install --upgrade pip -q
 
-say "Installing rapid-mlx==$RAPID_MLX_VERSION [vision,dflash,mtp] (a few minutes)"
+say "Installing rapid-mlx (patched fork, base $RAPID_MLX_VERSION) [vision,dflash,mtp]"
+# The fork branch carries the full patch set as reviewed commits — the three
+# original fixes (docs/PATCHES.md) PLUS the MTP upgrades that can't be
+# expressed as anchor patches: speculation at any temperature (exact
+# Leviathan-Chen accept; seeded requests fall back to plain decode),
+# chain-of-K on the GatedDeltaNet hybrid (multi-boundary state snapshots,
+# lossless-verified), drafter-hidden cascade, vectorized verify sampling.
+# Branch commits: https://github.com/photonsarefree/Rapid-MLX/commits/qwen36-mtp-tuned
+FORK_REF="git+https://github.com/photonsarefree/Rapid-MLX@qwen36-mtp-tuned"
 if command -v uv >/dev/null 2>&1; then
-    uv pip install --python "$VENV_PY" "rapid-mlx[vision,dflash,mtp]==$RAPID_MLX_VERSION"
+    uv pip install --python "$VENV_PY" "rapid-mlx[vision,dflash,mtp] @ $FORK_REF"
 else
-    "$PIP" install --prefer-binary "rapid-mlx[vision,dflash,mtp]==$RAPID_MLX_VERSION"
+    "$PIP" install "rapid-mlx[vision,dflash,mtp] @ $FORK_REF"
 fi
 
-# ── 4. patches ───────────────────────────────────────────────────────────────
-say "Applying patches (MTP for Qwen3.6 + thinking-by-default)"
+# ── 4. patches (legacy PyPI installs only) ───────────────────────────────────
+# The fork already contains everything; apply_patches.py anchor-matches
+# pristine 0.9.13 text, so on a fork install it cleanly no-ops.
+say "Verifying patch state"
 "$VENV_PY" "$REPO_DIR/scripts/apply_patches.py" --python "$VENV_PY" \
     || echo "  (some patches did not apply — see message above; basic serving still works)"
 

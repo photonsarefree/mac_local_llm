@@ -229,7 +229,10 @@ elif [ "$SIXBIT" = "1" ]; then
     MTP=0
 else
     MODEL="unsloth/Qwen3.6-35B-A3B-MLX-8bit"; MODEL_ID="$MODEL"; SIDECAR="$SIDECARS/35b"
-    [ "$MTP" = "default" ] && MTP=0
+    # MTP default ON since the auto-K depth controller (max 2) parks the
+    # drafter wherever it loses (prose, decayed long-ctx acceptance) — the
+    # old always-on-K=1 regression cases no longer apply. --no-mtp to A/B.
+    [ "$MTP" = "default" ] && MTP=1
 fi
 
 if [ "$VISION" = "1" ]; then
@@ -260,8 +263,14 @@ fi
 MODALITY="text + tools"
 if [ "$MTP" = "1" ]; then
     if [ -f "$SIDECAR/model-mtp.safetensors" ]; then
-        ARGS+=(--spec-decode mtp --force-spec-decode --mtp-disable-auto-k --mtp-sidecar "$SIDECAR")
-        MODALITY="text + tools + MTP"
+        # auto-K <=2: the EV controller picks draft depth per round (parks at
+        # K=0 on low-accept content). Trim fix keeps the last committed
+        # drafter-cache entry on reject (+3.5% at K=2, measured).
+        # Speculation now engages at ANY temperature (exact Leviathan-Chen
+        # accept); seeded temp>0 requests fall back to plain decode.
+        export RAPID_MLX_MTP_TRIM_FIX=1
+        ARGS+=(--spec-decode mtp --force-spec-decode --mtp-max-k 2 --mtp-sidecar "$SIDECAR")
+        MODALITY="text + tools + MTP(auto-K2)"
     else
         echo "note: MTP sidecar not found at $SIDECAR — starting without MTP"
         echo "      (build it: python scripts/build_mtp_sidecars.py --only $MODEL_KEY)"

@@ -1,5 +1,14 @@
 # Patches applied to Rapid-MLX 0.9.13
 
+> **As of the fork switch**: `install.sh` now installs
+> [`photonsarefree/Rapid-MLX@qwen36-mtp-tuned`](https://github.com/photonsarefree/Rapid-MLX/tree/qwen36-mtp-tuned),
+> which carries these three fixes as commits PLUS the larger MTP upgrade
+> (any-temperature speculation with exact Leviathan-Chen acceptance,
+> chain-of-K on the GatedDeltaNet hybrid via multi-boundary state snapshots,
+> drafter-hidden cascade, vectorized verify sampling — see the branch commit
+> messages and docs/RECIPE.md). `apply_patches.py` remains for legacy PyPI
+> installs and no-ops on the fork.
+
 `scripts/apply_patches.py` applies these to the installed `vllm_mlx` package.
 They are idempotent (re-running is safe) and anchor-matched (each only fires if
 its exact pristine text is present), so they cleanly no-op if already applied

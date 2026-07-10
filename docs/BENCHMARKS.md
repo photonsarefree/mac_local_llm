@@ -142,3 +142,25 @@ RAM-constrained Macs (32–48 GB), where the 8-bit's ~35 GB is tight. The 8-bit
 remains the max-quality reference (6-bit quality was spot-checked, not
 exhaustively evaluated). Note MTP isn't wired for the 6-bit build (would need a
 6-bit-matched sidecar), but 35B defaults MTP off anyway.
+
+## MTP speculation upgrade (fork branch `qwen36-mtp-tuned`)
+
+Same weights + sidecar throughout; greedy outputs fingerprint-identical
+across every MTP variant (lossless gate). Short-context, 35B 8-bit, M4 Max.
+
+| config | greedy code | greedy prose | temp-0.6 code | temp-0.6 prose |
+|---|---|---|---|---|
+| no MTP | 73 | 73 | 77 | 77 |
+| MTP K=1 (old stock behavior, greedy only) | 90-93 | 74 | 77 (no spec) | 77 (no spec) |
+| MTP K=2 + trim fix | 92 | 69 | 85 | 65 |
+| **MTP auto-K ≤2 + trim fix (new default)** | **91** | 71 | **85** | 68 |
+
+- Draft acceptance decays by depth with the recursive MTP head
+  (α₁ 0.83 → α₂ 0.65 → α₃ 0.39 on code), so K=3 regresses (83) and the
+  EV controller capping at K=2 with parking is the right default.
+- Temperature-0.6 speculation is the headline: stock never speculated on
+  sampled requests at all (agent/thinking traffic ran at plain-decode speed).
+- Cross-engine context: MTPLX v2.0.2 on identical weights+sidecar measured
+  AR 61/55/48 and MTP-D2 76/65/49-44 at 1k/16k/32k on our review-prompt
+  harness — Rapid-MLX remains faster at every point; its D2-over-D1
+  mechanism (depth-2 + drafter-hidden recursion) is what the fork lifts.
