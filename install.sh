@@ -84,7 +84,8 @@ mkdir -p "$BIN_DIR"
 ln -sf "$REPO_DIR/bin/llm-serve"  "$BIN_DIR/llm-serve"
 ln -sf "$REPO_DIR/bin/llm-vision" "$BIN_DIR/llm-vision"
 ln -sf "$REPO_DIR/bin/llm-check"  "$BIN_DIR/llm-check"
-chmod +x "$REPO_DIR/bin/llm-serve" "$REPO_DIR/bin/llm-vision" "$REPO_DIR/bin/llm-check"
+ln -sf "$REPO_DIR/bin/llm-bench"  "$BIN_DIR/llm-bench"
+chmod +x "$REPO_DIR/bin/llm-serve" "$REPO_DIR/bin/llm-vision" "$REPO_DIR/bin/llm-check" "$REPO_DIR/bin/llm-bench"
 
 if [[ ":$PATH:" != *":$BIN_DIR:"* ]]; then
     SHELL_RC="$HOME/.zshrc"; [ -n "${BASH_VERSION:-}" ] && SHELL_RC="$HOME/.bashrc"
@@ -119,6 +120,7 @@ echo "  Start a server:   llm-serve 35b        (or 27b)"
 echo "  Connection info:  printed on start; llm-serve status re-prints it"
 echo "  Image Q&A:        llm-vision <image> \"question\""
 echo "  Spot check:       llm-check              (test prompt + speed + acceptance)"
+echo "  Latency profile:  llm-bench              (TTFT + tok/s at 3 context sizes)"
 echo ""
 if [ -z "$WITH_MODELS" ]; then
     echo "  Models not downloaded yet. First 'llm-serve' will pull the weights"

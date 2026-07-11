@@ -1,0 +1,150 @@
+#!/usr/bin/env bash
+# llm-bench — quick latency/throughput profile of the local server.
+#
+#   llm-bench                      # context lengths 500, 1k, 10k (~90s total)
+#   llm-bench --ctx 500,1000,13000 # custom lengths (e.g. your agent's prompt size)
+#   llm-bench --tokens 250         # decode sample length per run
+#
+# For each context length, measures:
+#   cold TTFT   first token with nothing cached (the "new conversation" cost)
+#   warm TTFT   same prefix again, different question (the "next turn" cost)
+#   decode      steady tokens/sec while generating
+#   accepted    draft acceptance for the decode window
+set -euo pipefail
+
+PORT="${LLM_SERVE_PORT:-8642}"
+CTXS="500,1000,10000"
+GEN_TOKENS="250"
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --port) PORT="$2"; shift ;;
+        --ctx) CTXS="$2"; shift ;;
+        --tokens) GEN_TOKENS="$2"; shift ;;
+        -h|--help) sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        *) echo "unknown arg: $1" >&2; exit 1 ;;
+    esac
+    shift
+done
+
+BASE="http://127.0.0.1:${PORT}"
+if ! curl -s -m 3 "$BASE/v1/models" >/dev/null 2>&1; then
+    echo "No server on port $PORT. Start one with: llm-serve 35b" >&2
+    exit 1
+fi
+
+
+# Power state changes GPU speed by roughly 2x. Say so before printing numbers.
+if pmset -g batt 2>/dev/null | grep -q "Battery Power"; then
+    echo "  NOTE: running on battery. GPU decode runs at roughly half speed." >&2
+fi
+if [ "$(pmset -g 2>/dev/null | awk '/powermode/ {print $2}')" = "1" ]; then
+    echo "  NOTE: Low Power Mode is on. Numbers will read far below plugged-in rates." >&2
+fi
+PY="${RAPID_MLX_VENV:-$HOME/.rapid-mlx}/bin/python"
+[ -x "$PY" ] || PY="$(command -v python3)"
+
+BASE="$BASE" CTXS="$CTXS" GEN_TOKENS="$GEN_TOKENS" "$PY" - <<'PY'
+import json, os, random, time, urllib.request
+
+base = os.environ["BASE"]
+ctxs = [int(x) for x in os.environ["CTXS"].split(",")]
+gen_tokens = int(os.environ["GEN_TOKENS"])
+nonce = random.randrange(10**9)  # busts any cache from a previous run
+
+
+def post(path, body=None, timeout=600):
+    data = json.dumps(body).encode() if body is not None else b"{}"
+    req = urllib.request.Request(base + path, data=data,
+                                 headers={"Content-Type": "application/json"})
+    return urllib.request.urlopen(req, timeout=timeout)
+
+
+def metrics():
+    try:
+        with urllib.request.urlopen(base + "/metrics", timeout=5) as r:
+            out = {}
+            for line in r.read().decode().splitlines():
+                if line.startswith("rapid_mlx_spec_decode_a") and " " in line:
+                    key, val = line.rsplit(" ", 1)
+                    name = "acc" if "accepts_total" in key else ("att" if "attempts_total" in key else None)
+                    if name:
+                        out[name] = float(val)
+            return out
+    except Exception:
+        return {}
+
+
+def filler(target_tokens):
+    # Code-like filler; one line measures ~35 tokens on Qwen tokenizers.
+    lines = [f"def handler_{nonce}_{i}(payload):\n    return validate(payload, rule_id={i}, retries=3)\n"
+             for i in range(max(1, target_tokens // 35))]
+    return "You are reviewing this service code base.\n\n" + "".join(lines)
+
+
+def run(prompt, question):
+    m0 = metrics()
+    body = {
+        "model": "default",
+        # The long prefix goes in the system role and the question in the
+        # user role, matching how agents reuse a fixed system prompt. Warm
+        # turns then exercise the same prefix-cache path agents rely on.
+        "messages": [{"role": "system", "content": prompt},
+                     {"role": "user", "content": question}],
+        "max_tokens": gen_tokens, "temperature": 0.0, "stream": True,
+        "stream_options": {"include_usage": True},
+        "chat_template_kwargs": {"enable_thinking": False},
+    }
+    t0 = time.perf_counter()
+    t_first = t_last = None
+    usage = {}
+    with post("/v1/chat/completions", body) as r:
+        for raw in r:
+            raw = raw.strip()
+            if not raw.startswith(b"data: ") or raw == b"data: [DONE]":
+                continue
+            chunk = json.loads(raw[6:])
+            if chunk.get("usage"):
+                usage = chunk["usage"]
+            for c in chunk.get("choices", []):
+                if c.get("delta", {}).get("content"):
+                    now = time.perf_counter()
+                    t_first = t_first or now
+                    t_last = now
+    m1 = metrics()
+    comp = usage.get("completion_tokens") or 0
+    rate = (comp - 1) / (t_last - t_first) if comp > 1 and t_last and t_last > t_first else None
+    att = m1.get("att", 0) - m0.get("att", 0)
+    acc = m1.get("acc", 0) - m0.get("acc", 0)
+    return {
+        "prompt_tokens": usage.get("prompt_tokens"),
+        "ttft": t_first - t0 if t_first else None,
+        "rate": rate,
+        "accept": (acc / att) if att > 0 else None,
+    }
+
+
+print(f"\n  {'context':>8} | {'cold TTFT':>9} | {'warm TTFT':>9} | {'decode':>12} | accepted")
+print("  " + "-" * 62)
+for ctx in ctxs:
+    try:
+        post("/v1/cache/clear", timeout=30)
+    except Exception:
+        pass
+    time.sleep(1)
+    prefix = filler(ctx)
+    cold = run(prefix, "Task 1: write a detailed function-by-function review of this code, covering purpose, inputs, and failure modes. Be thorough and keep going until told to stop.")
+    warm = run(prefix, "Task 2: write a detailed refactoring plan for this code with numbered steps and rationale for each. Be thorough and keep going until told to stop.")
+    pt = cold["prompt_tokens"] or ctx
+    rate = warm["rate"] or cold["rate"]
+    accept = warm["accept"] if warm["accept"] is not None else cold["accept"]
+    if rate:
+        acc_txt = f"{accept:.0%}" if accept is not None else "n/a"
+        print(f"  {pt:>7}t | {cold['ttft']:>8.2f}s | {warm['ttft']:>8.2f}s | "
+              f"{rate:>7.1f} tok/s | {acc_txt}")
+    else:
+        print(f"  {pt:>7}t | {cold['ttft']:>8.2f}s | {warm['ttft']:>8.2f}s | {'n/a':>12} | n/a")
+print()
+print("  cold = new conversation at this size. warm = next turn with the same")
+print("  prefix (system prompt reuse). Agents with a large fixed system prompt")
+print("  pay cold once, then warm per turn if the prefix cache holds.")
+PY

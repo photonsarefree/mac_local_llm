@@ -29,6 +29,14 @@ if ! curl -s -m 3 "$BASE/v1/models" >/dev/null 2>&1; then
     exit 1
 fi
 
+
+# Power state changes GPU speed by roughly 2x. Say so before printing numbers.
+if pmset -g batt 2>/dev/null | grep -q "Battery Power"; then
+    echo "  NOTE: running on battery. GPU decode runs at roughly half speed." >&2
+fi
+if [ "$(pmset -g 2>/dev/null | awk '/powermode/ {print $2}')" = "1" ]; then
+    echo "  NOTE: Low Power Mode is on. Numbers will read far below plugged-in rates." >&2
+fi
 PY="${RAPID_MLX_VENV:-$HOME/.rapid-mlx}/bin/python"
 [ -x "$PY" ] || PY="$(command -v python3)"
 
