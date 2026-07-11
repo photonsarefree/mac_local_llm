@@ -197,12 +197,25 @@ case "${1:-help}" in
                 printf "."; sleep 1
             done
             echo " — still shutting down; force: pkill -9 -f 'rapid-mlx serve'"
-        elif curl -s -f -m 2 -o /dev/null "http://127.0.0.1:$DEFAULT_PORT/v1/models" 2>/dev/null; then
-            # Nothing matched "rapid-mlx serve", but the port is serving — a
-            # server started another way (e.g. the optim pipeline.py launcher).
-            echo "no llm-serve-managed server, but port $DEFAULT_PORT is serving (started another way):"
-            lsof -nP -iTCP:"$DEFAULT_PORT" -sTCP:LISTEN 2>/dev/null | tail -n +2 | head -2
-            echo "stop it with:  kill \$(lsof -nP -iTCP:$DEFAULT_PORT -sTCP:LISTEN -t)"
+        elif curl -s -f -m 2 "http://127.0.0.1:$DEFAULT_PORT/v1/models" 2>/dev/null | grep -q '"owned_by":"rapid-mlx"'; then
+            # Nothing matched "rapid-mlx serve", but a rapid-mlx server is on the
+            # port — started another way (e.g. the optim pipeline.py launcher).
+            # Stop it gracefully by PID so `stop` does what it says. The
+            # owned_by check keeps us from killing an unrelated process that
+            # happens to hold the port.
+            PIDS=$(lsof -nP -iTCP:"$DEFAULT_PORT" -sTCP:LISTEN -t 2>/dev/null)
+            if [ -n "$PIDS" ]; then
+                printf "stopping server on port %s (persisting prefix cache)" "$DEFAULT_PORT"
+                # shellcheck disable=SC2086
+                kill -TERM $PIDS 2>/dev/null
+                for _ in $(seq 1 30); do
+                    lsof -nP -iTCP:"$DEFAULT_PORT" -sTCP:LISTEN -t >/dev/null 2>&1 || { echo " — stopped"; exit 0; }
+                    printf "."; sleep 1
+                done
+                echo " — still shutting down; force: kill -9 $PIDS"
+            else
+                echo "a server answers on port $DEFAULT_PORT but no PID could be resolved (remote or containerized?)"
+            fi
             exit 0
         else echo "no server running"; fi
         exit 0 ;;
