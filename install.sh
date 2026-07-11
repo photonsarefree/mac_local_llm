@@ -83,6 +83,7 @@ say "Linking launchers into $BIN_DIR"
 mkdir -p "$BIN_DIR"
 ln -sf "$REPO_DIR/bin/llm-serve"  "$BIN_DIR/llm-serve"
 ln -sf "$REPO_DIR/bin/llm-vision" "$BIN_DIR/llm-vision"
+ln -sf "$REPO_DIR/bin/llm-check"  "$BIN_DIR/llm-check"
 chmod +x "$REPO_DIR/bin/llm-serve" "$REPO_DIR/bin/llm-vision"
 
 if [[ ":$PATH:" != *":$BIN_DIR:"* ]]; then

@@ -55,6 +55,7 @@ want to build MTP sidecars separately — see below).
 
 ```bash
 llm-serve 35b            # start the fast MoE model (default)
+llm-check                       # spot check: sends a test prompt, prints reply + speed + acceptance
 llm-serve 27b            # start the quality model (MTP on)
 llm-serve status         # print connection details again
 llm-serve stop           # stop (persists prefix cache)
