@@ -63,14 +63,22 @@ def metrics():
     try:
         with urllib.request.urlopen(base + "/metrics", timeout=5) as r:
             out = {}
+            # Match the exact metric name (before the label braces), not a
+            # substring. The endpoint also exposes dflash_*_total counters that
+            # CONTAIN "attempts_total"/"accepts_total"; a substring match reads
+            # those (value 0, dflash unused) and clobbers the real mtp values.
+            wanted = {
+                "rapid_mlx_spec_decode_attempts_total": "att",
+                "rapid_mlx_spec_decode_accepts_total": "acc",
+                "rapid_mlx_spec_decode_park_total": "park",
+            }
             for line in r.read().decode().splitlines():
-                if line.startswith("rapid_mlx_spec_decode_") and " " in line:
-                    key, val = line.rsplit(" ", 1)
-                    name = ("acc" if "accepts_total" in key else
-                            "att" if "attempts_total" in key else
-                            "park" if "park_total" in key else None)
-                    if name:
-                        out[name] = float(val)
+                if not line.startswith("rapid_mlx_spec_decode_") or " " not in line:
+                    continue
+                key, val = line.rsplit(" ", 1)
+                name = wanted.get(key.split("{", 1)[0])
+                if name:
+                    out[name] = float(val)
             return out
     except Exception:
         return {}
