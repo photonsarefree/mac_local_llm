@@ -197,6 +197,13 @@ case "${1:-help}" in
                 printf "."; sleep 1
             done
             echo " — still shutting down; force: pkill -9 -f 'rapid-mlx serve'"
+        elif curl -s -f -m 2 -o /dev/null "http://127.0.0.1:$DEFAULT_PORT/v1/models" 2>/dev/null; then
+            # Nothing matched "rapid-mlx serve", but the port is serving — a
+            # server started another way (e.g. the optim pipeline.py launcher).
+            echo "no llm-serve-managed server, but port $DEFAULT_PORT is serving (started another way):"
+            lsof -nP -iTCP:"$DEFAULT_PORT" -sTCP:LISTEN 2>/dev/null | tail -n +2 | head -2
+            echo "stop it with:  kill \$(lsof -nP -iTCP:$DEFAULT_PORT -sTCP:LISTEN -t)"
+            exit 0
         else echo "no server running"; fi
         exit 0 ;;
     logs)  exec tail -f "$LOG_DIR/serve.log" ;;
@@ -268,6 +275,17 @@ fi
 
 if pgrep -f "rapid-mlx serve" >/dev/null; then
     show_running "$MODEL_ID" "$MODEL_KEY"; exit 0
+fi
+# The pgrep above only catches servers WE started. If the port is already
+# serving (e.g. the optim pipeline.py launcher, or a stale process), launching
+# anyway would fail to bind while our health-poll passes against the existing
+# server — a false "ready". Refuse instead, and say how to clear it.
+if curl -s -f -m 2 -o /dev/null "http://127.0.0.1:$PORT/v1/models" 2>/dev/null; then
+    echo "A server is already serving on port $PORT (not started by llm-serve)." >&2
+    echo "Stop it first, then retry. To find and stop it:" >&2
+    echo "  lsof -nP -iTCP:$PORT -sTCP:LISTEN        # what's holding the port" >&2
+    echo "  kill \$(lsof -nP -iTCP:$PORT -sTCP:LISTEN -t)   # stop it" >&2
+    exit 1
 fi
 
 ARGS=(serve "$MODEL" --host 127.0.0.1 --port "$PORT"
@@ -342,14 +360,17 @@ echo $! > "$PID_FILE"
 
 printf "Loading %s (30-90s)" "$MODEL_ID"
 for _ in $(seq 1 150); do
+    # Check OUR process is alive BEFORE trusting the health probe. If the
+    # launch died (bad flag, port clash), a pre-existing server could still
+    # answer /health/ready and make us report a false "ready".
+    if ! kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
+        echo ""; echo "Server exited during startup — last log lines:"; tail -15 "$LOG_DIR/serve.log"; exit 1
+    fi
     if curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$PORT/health/ready" 2>/dev/null | grep -q 200; then
         echo ""
         write_info_file "$MODEL_ID" "$MODALITY" "$KV" "$CACHE_GB" "$PREFILL" "$GPU_UTIL" "$PORT" "$THINKING"
         print_info_block "Local LLM server ready"
         exit 0
-    fi
-    if ! kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
-        echo ""; echo "Server exited during startup — last log lines:"; tail -15 "$LOG_DIR/serve.log"; exit 1
     fi
     printf "."; sleep 3
 done
