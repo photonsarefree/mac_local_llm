@@ -78,6 +78,13 @@ OPTIONS (defaults tuned for coding-agent use)
                        loses (prose, decayed long-context acceptance).
                        Engages at any temperature; seeded sampled requests
                        fall back to plain decoding for reproducibility.
+  --k <auto|0|1|2>     Draft depth. Default auto (the EV controller picks per
+                       round, 0-2). A number pins it and disables the
+                       controller: 2 always drafts two ahead (best on code,
+                       ~-5% on prose vs 1), 1 always drafts one, 0 = no
+                       speculation (same as --no-mtp). Pin 2 if you'd rather
+                       not have the controller park on drafting-favorable
+                       content. Implies --mtp.
   --kv <bf16|int8|int4>  KV cache dtype. Default int8 (quality-safe to 100k).
                        int4 is measurably slower on 27b — not recommended.
   --cache-gb <N>       Prefix-cache budget (GB). Default 24. Bigger = more
@@ -199,7 +206,7 @@ esac
 
 MODEL_KEY="$1"; shift
 PORT="$DEFAULT_PORT"; KV="int8"; CACHE_GB=24; PREFILL=2048; GPU_UTIL=0.85
-VISION=0; TURBOQUANT=1; KV_EXPLICIT=0; PFLASH=0; FG=0; MTP="default"; THINKING="on"; SIXBIT=0; EXTRA=()
+VISION=0; TURBOQUANT=1; KV_EXPLICIT=0; PFLASH=0; FG=0; MTP="default"; THINKING="on"; SIXBIT=0; KMODE="auto"; EXTRA=()
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -207,6 +214,7 @@ while [ $# -gt 0 ]; do
         --6bit) SIXBIT=1 ;;
         --mtp) MTP=1 ;;
         --no-mtp) MTP=0 ;;
+        --k) KMODE="$2"; shift ;;
         --vision) VISION=1 ;;
         --kv) KV="$2"; KV_EXPLICIT=1; shift ;;
         --cache-gb) CACHE_GB="$2"; shift ;;
@@ -222,6 +230,15 @@ while [ $# -gt 0 ]; do
     esac
     shift
 done
+
+# --k: auto (controller) or a pinned depth. 0 means no speculation at all,
+# so fold it into --no-mtp; 1/2 pin the depth and switch MTP on.
+case "$KMODE" in
+    auto) ;;
+    0) MTP=0 ;;
+    1|2) MTP=1 ;;
+    *) echo "error: --k must be auto, 0, 1, or 2 (got '$KMODE')" >&2; exit 1 ;;
+esac
 
 if [ "$MODEL_KEY" = "27b" ]; then
     MODEL="unsloth/Qwen3.6-27B-MLX-8bit"; MODEL_ID="$MODEL"; SIDECAR="$SIDECARS/27b"
@@ -290,6 +307,15 @@ if [ "$MTP" = "1" ]; then
         export RAPID_MLX_MTP_COMPILED_VERIFY=1
         ARGS+=(--spec-decode mtp --force-spec-decode --mtp-max-k 2 --mtp-sidecar "$SIDECAR")
         MODALITY="text + tools + MTP(auto-K2)"
+        # --k 1|2 pins the depth: disable the EV controller and draft that
+        # many every round. Unset any FIXED_K from the caller's env first
+        # so auto stays auto.
+        unset RAPID_MLX_MTP_FIXED_K
+        if [ "$KMODE" = "1" ] || [ "$KMODE" = "2" ]; then
+            export RAPID_MLX_MTP_FIXED_K="$KMODE"
+            ARGS+=(--mtp-disable-auto-k)
+            MODALITY="text + tools + MTP(fixed-K$KMODE)"
+        fi
     else
         echo "note: MTP sidecar not found at $SIDECAR — starting without MTP"
         echo "      (build it: python scripts/build_mtp_sidecars.py --only $MODEL_KEY)"
